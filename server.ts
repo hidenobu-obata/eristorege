@@ -5,7 +5,7 @@ import * as path from 'path';
 
 const app = express();
 const PORT = 3000;
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const UPLOAD_DIR = process.env.NODE_ENV === 'production' ? '/data' : path.join(__dirname, 'uploads');
 const METADATA_FILE = path.join(__dirname, 'metadata.json');
 
 // 定数設定
