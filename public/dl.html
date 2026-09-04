@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ファイルダウンロード - えりのすとれーじ</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 15px;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f7f9fc;
+            background-image: radial-gradient(#d1d8e0 15%, transparent 16%), radial-gradient(#d1d8e0 15%, transparent 16%);
+            background-size: 30px 30px;
+            background-position: 0 0, 15px 15px;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+        .container {
+            background: #ffffff;
+            padding: 30px 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            width: 100%;
+            max-width: 420px;
+            text-align: center;
+            box-sizing: border-box;
+        }
+        h1 {
+            color: #ff6b81;
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+        p {
+            font-size: 15px;
+            color: #555;
+            line-height: 1.5;
+        }
+        .btn {
+            background-color: #ff6b81;
+            color: white;
+            border: none;
+            padding: 14px 20px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            width: 100%;
+            transition: background 0.2s;
+            margin-top: 15px;
+            box-sizing: border-box;
+        }
+        .btn:hover {
+            background-color: #ff4757;
+        }
+        .input-group {
+            margin-bottom: 15px;
+            text-align: left;
+        }
+        .input-group label {
+            display: block;
+            font-size: 13px;
+            color: #555;
+            margin-bottom: 5px;
+        }
+        .input-group input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 16px;
+        }
+        .error-msg {
+            color: #ff4757;
+            font-size: 14px;
+            margin-top: 15px;
+            word-break: break-all;
+        }
+        .hidden {
+            display: none;
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                padding: 20px 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>えりのすとれーじ</h1>
+        
+        <div id="password-prompt" class="hidden">
+            <p>このファイルにはパスワードが設定されています。</p>
+            <div class="input-group">
+                <label for="dl-password">パスワード</label>
+                <input type="password" id="dl-password" placeholder="パスワードを入力">
+            </div>
+            <button id="auth-btn" class="btn">認証してダウンロード画面へ</button>
+        </div>
+
+        <div id="download-prompt" class="hidden">
+            <p id="file-info"></p>
+            <button id="download-btn" class="btn">ダウンロード</button>
+        </div>
+
+        <div id="error-prompt" class="error-msg"></div>
+    </div>
+
+    <script>
+        const pathSegments = window.location.pathname.split('/');
+        const fileId = pathSegments[pathSegments.length - 1];
+
+        const passwordPrompt = document.getElementById('password-prompt');
+        const downloadPrompt = document.getElementById('download-prompt');
+        const errorPrompt = document.getElementById('error-prompt');
+        const dlPasswordInput = document.getElementById('dl-password');
+        const authBtn = document.getElementById('auth-btn');
+        const downloadBtn = document.getElementById('download-btn');
+        const fileInfo = document.getElementById('file-info');
+
+        let currentPassword = '';
+
+        async function checkFile(password = '') {
+            try {
+                const res = await fetch(`/api/check/${fileId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+                const data = await res.json();
+
+                if (res.status === 401) {
+                    passwordPrompt.classList.remove('hidden');
+                    return;
+                }
+
+                if (!res.ok) {
+                    throw new Error(data.error || 'ファイルが見つかりません。');
+                }
+
+                currentPassword = password;
+                passwordPrompt.classList.add('hidden');
+                downloadPrompt.classList.remove('hidden');
+                fileInfo.innerHTML = `ファイル名: <strong>${data.originalName}</strong><br>(${(data.size / (1024*1024)).toFixed(2)} MB)`;
+
+            } catch (err) {
+                errorPrompt.textContent = err.message;
+            }
+        }
+
+        authBtn.addEventListener('click', () => {
+            checkFile(dlPasswordInput.value);
+        });
+
+        downloadBtn.addEventListener('click', async () => {
+            const downloadUrl = `/api/download/${fileId}?pwd=${encodeURIComponent(currentPassword)}`;
+            
+            try {
+                const res = await fetch(downloadUrl);
+                if (res.status === 503) {
+                    const data = await res.json();
+                    errorPrompt.textContent = data.error;
+                    return;
+                }
+                if (!res.ok) {
+                    const data = await res.json();
+                    throw new Error(data.error || 'ダウンロードに失敗しました。');
+                }
+                
+                window.location.href = downloadUrl;
+            } catch (err) {
+                errorPrompt.textContent = err.message;
+            }
+        });
+
+        checkFile();
+    </script>
+</body>
+</html>

@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>えりのすとれーじ</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 15px;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f7f9fc;
+            background-image: radial-gradient(#d1d8e0 15%, transparent 16%), radial-gradient(#d1d8e0 15%, transparent 16%);
+            background-size: 30px 30px;
+            background-position: 0 0, 15px 15px;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+        .container {
+            background: #ffffff;
+            padding: 30px 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            width: 100%;
+            max-width: 480px;
+            text-align: center;
+            box-sizing: border-box;
+        }
+        h1 {
+            color: #ff6b81;
+            margin-top: 0;
+            margin-bottom: 25px;
+            font-size: 24px;
+            letter-spacing: 1px;
+        }
+        .drop-zone {
+            border: 2px dashed #ffb8b8;
+            border-radius: 8px;
+            padding: 30px 15px;
+            background: #fff9f9;
+            cursor: pointer;
+            transition: background 0.2s, border-color 0.2s;
+            margin-bottom: 20px;
+            box-sizing: border-box;
+        }
+        .drop-zone.dragover {
+            background: #ffe6e6;
+            border-color: #ff6b81;
+        }
+        .drop-zone p {
+            margin: 0;
+            color: #666;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .input-group {
+            margin-bottom: 15px;
+            text-align: left;
+        }
+        .input-group label {
+            display: block;
+            font-size: 13px;
+            color: #555;
+            margin-bottom: 5px;
+        }
+        .input-group input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 16px; /* スマホでズームされないように16px以上 */
+        }
+        .btn {
+            background-color: #ff6b81;
+            color: white;
+            border: none;
+            padding: 14px 20px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            width: 100%;
+            transition: background 0.2s;
+            box-sizing: border-box;
+        }
+        .btn:hover {
+            background-color: #ff4757;
+        }
+        .error-msg {
+            color: #ff4757;
+            font-size: 14px;
+            margin-top: 15px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .success-box {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f1f2f6;
+            border-radius: 6px;
+            word-break: break-all;
+            text-align: left;
+        }
+        .success-box p {
+            margin: 0 0 5px 0;
+            font-size: 13px;
+            color: #555;
+        }
+        .success-box a {
+            color: #ff6b81;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .hidden {
+            display: none;
+        }
+
+        /* スマートフォン向け調整 */
+        @media (max-width: 480px) {
+            .container {
+                padding: 20px 15px;
+            }
+            h1 {
+                font-size: 22px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>えりのすとれーじ</h1>
+        
+        <div id="upload-section">
+            <div id="drop-zone" class="drop-zone">
+                <p>ここにファイルを置いてください<br><small>(ZIPファイルのみ / 最大300MB / 保存期間7日)</small></p>
+                <input type="file" id="file-input" accept=".zip" class="hidden">
+            </div>
+
+            <div class="input-group">
+                <label for="password-input">パスワード設定 (任意)</label>
+                <input type="password" id="password-input" placeholder="パスワードを入力">
+            </div>
+
+            <button id="upload-btn" class="btn hidden">アップロード開始</button>
+            <div id="error-msg" class="error-msg"></div>
+        </div>
+
+        <div id="result-section" class="hidden">
+            <p>アップロードが完了しました！</p>
+            <div class="success-box">
+                <p>保存アドレス（短縮）:</p>
+                <a id="result-link" href="#" target="_blank"></a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const passwordInput = document.getElementById('password-input');
+        const uploadBtn = document.getElementById('upload-btn');
+        const errorMsg = document.getElementById('error-msg');
+        const uploadSection = document.getElementById('upload-section');
+        const resultSection = document.getElementById('result-section');
+        const resultLink = document.getElementById('result-link');
+
+        let selectedFile = null;
+
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            errorMsg.textContent = '';
+            
+            if (!file.name.toLowerCase().endsWith('.zip')) {
+                errorMsg.textContent = 'ZIPファイルでないファイルはZIPファイルおいてください';
+                return;
+            }
+
+            if (file.size > 300 * 1024 * 1024) {
+                errorMsg.textContent = '３００M以上のファイルは扱えませんとエラーが表示されます。';
+                return;
+            }
+
+            selectedFile = file;
+            dropZone.querySelector('p').innerHTML = `選択中: <strong>${file.name}</strong><br>(${(file.size / (1024*1024)).toFixed(2)} MB)`;
+            uploadBtn.classList.remove('hidden');
+        }
+
+        uploadBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'アップロード中...';
+            errorMsg.textContent = '';
+
+            const password = passwordInput.value;
+
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    headers: {
+                        'X-File-Name': encodeURIComponent(selectedFile.name),
+                        'X-File-Password': password ? password : ''
+                    },
+                    body: selectedFile
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'アップロードに失敗しました。');
+                }
+
+                const fullUrl = window.location.origin + '/dl/' + data.downloadUrl.split('/').pop();
+                resultLink.href = fullUrl;
+                resultLink.textContent = fullUrl;
+                
+                uploadSection.classList.add('hidden');
+                resultSection.classList.remove('hidden');
+
+            } catch (err) {
+                errorMsg.textContent = err.message;
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = 'アップロード開始';
+            }
+        });
+    </script>
+</body>
+</html>
