@@ -6,7 +6,7 @@ import * as path from 'path';
 const app = express();
 const PORT = 3000;
 const UPLOAD_DIR = process.env.NODE_ENV === 'production' ? '/data' : path.join(__dirname, 'uploads');
-const METADATA_FILE = path.join(__dirname, 'metadata.json');
+const METADATA_FILE = process.env.NODE_ENV === 'production' ? path.join('/data', 'metadata.json') : path.join(__dirname, 'metadata.json');
 
 // 定数設定
 const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
