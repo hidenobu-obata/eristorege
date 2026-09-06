@@ -6,9 +6,10 @@ import * as path from 'path';
 const app = express();
 const PORT = 3000;
 
-const isProduction = process.env.NODE_ENV === 'production';
-const UPLOAD_DIR = isProduction ? '/data/uploads' : path.join(__dirname, 'uploads');
-const METADATA_FILE = isProduction ? '/data/metadata.json' : path.join(__dirname, 'metadata.json');
+// 【超重要】Fly.ioのボリューム（/data）が存在するか、または production の場合に /data を強制使用
+const isFlyEnv = fs.existsSync('/data') || process.env.NODE_ENV === 'production';
+const UPLOAD_DIR = isFlyEnv ? '/data/uploads' : path.join(__dirname, 'uploads');
+const METADATA_FILE = isFlyEnv ? path.join('/data', 'metadata.json') : path.join(__dirname, 'metadata.json');
 
 const MAX_FILE_SIZE = 300 * 1024 * 1024; 
 const EXPIRY_TIME_MS = 7 * 24 * 60 * 60 * 1000; // 7日
@@ -23,45 +24,34 @@ interface FileMeta {
     expiresAt: number;
 }
 
-// 初期化とディレクトリ確認
-console.log(`[VERIFY] 環境: ${isProduction ? 'Production (Fly.io /data)' : 'Local'}`);
-console.log(`[VERIFY] UPLOAD_DIR: ${UPLOAD_DIR}`);
-console.log(`[VERIFY] METADATA_FILE: ${METADATA_FILE}`);
+console.log(`[FIXED] 判定環境: ${isFlyEnv ? 'Fly.io 永続ボリューム (/data)' : 'ローカル環境'}`);
+console.log(`[FIXED] UPLOAD_DIR: ${UPLOAD_DIR}`);
+console.log(`[FIXED] METADATA_FILE: ${METADATA_FILE}`);
 
 try {
     if (!fs.existsSync(UPLOAD_DIR)) {
         fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-        console.log(`[VERIFY] アップロードディレクトリを新規作成しました。`);
-    } else {
-        console.log(`[VERIFY] アップロードディレクトリは既に存在します。中のファイル数: ${fs.readdirSync(UPLOAD_DIR).length}`);
     }
 } catch (e) {
-    console.error(`[ERROR] UPLOAD_DIR 初期化失敗:`, e);
+    console.error('UPLOAD_DIR作成失敗:', e);
 }
 
 try {
     if (!fs.existsSync(METADATA_FILE)) {
         fs.writeFileSync(METADATA_FILE, JSON.stringify({}, null, 2));
-        console.log(`[VERIFY] メタデータファイルを新規作成しました。`);
-    } else {
-        const content = fs.readFileSync(METADATA_FILE, 'utf-8');
-        console.log(`[VERIFY] メタデータファイルが存在します。内容: ${content}`);
     }
 } catch (e) {
-    console.error(`[ERROR] METADATA_FILE 初期化失敗:`, e);
+    console.error('METADATA_FILE作成失敗:', e);
 }
 
 function loadMetadata(): Record<string, FileMeta> {
     try {
         if (fs.existsSync(METADATA_FILE)) {
             const data = fs.readFileSync(METADATA_FILE, 'utf-8');
-            const parsed = data ? JSON.parse(data) : {};
-            console.log(`[DEBUG] メタデータ読み込み成功。登録ファイル数: ${Object.keys(parsed).length}`);
-            return parsed;
+            return data ? JSON.parse(data) : {};
         }
         return {};
     } catch (err) {
-        console.error('[ERROR] メタデータの読み込み失敗:', err);
         return {};
     }
 }
@@ -69,10 +59,7 @@ function loadMetadata(): Record<string, FileMeta> {
 function saveMetadata(data: Record<string, FileMeta>) {
     try {
         fs.writeFileSync(METADATA_FILE, JSON.stringify(data, null, 2));
-        console.log(`[DEBUG] メタデータ保存成功。登録ファイル数: ${Object.keys(data).length}`);
-    } catch (err) {
-        console.error('[ERROR] メタデータの保存失敗:', err);
-    }
+    } catch (err) {}
 }
 
 app.use(express.json());
@@ -128,13 +115,12 @@ app.post('/api/upload', (req: Request, res: Response) => {
         };
 
         saveMetadata(metadata);
-        console.log(`[UPLOAD] 完了: ID=${fileId}, パス=${filePath}, 保存時刻=${new Date(now).toISOString()}, 有効期限=${new Date(expiresAt).toISOString()}`);
+        console.log(`[UPLOAD] 永続化成功: ID=${fileId}, パス=${filePath}`);
 
         res.json({ success: true, downloadUrl: `/dl/${fileId}` });
     });
 
     writeStream.on('error', (err) => {
-        console.error('[ERROR] アップロード書き込みエラー:', err);
         if (!res.headersSent) {
             res.status(500).json({ error: '失敗しました' });
         }
@@ -147,19 +133,12 @@ app.post('/api/check/:id', (req: Request, res: Response) => {
     const { password } = req.body;
     const metadata = loadMetadata();
 
-    console.log(`[CHECK] 要求ID: ${id}, 現在のメタデータキー一覧: ${Object.keys(metadata).join(', ')}`);
-
     const meta = metadata[id];
     if (!meta) {
-        console.log(`[CHECK] ❌ IDが見つかりません: ${id}`);
         return res.status(404).json({ error: 'ファイルが見つからないか、期限切れです。' });
     }
 
-    const now = Date.now();
-    console.log(`[CHECK] ℹ️ ファイル発見: ID=${id}, 経過時間=${Math.floor((now - meta.createdAt) / 1000)}秒, 残り時間=${Math.floor((meta.expiresAt - now) / 1000)}秒`);
-
-    if (meta.expiresAt < now) {
-        console.log(`[CHECK] ❌ 期限切れ判定されています (現在: ${now} > 期限: ${meta.expiresAt})`);
+    if (meta.expiresAt < Date.now()) {
         return res.status(404).json({ error: 'ファイルは期限切れです。' });
     }
 
@@ -183,7 +162,6 @@ app.get('/api/download/:id', (req: Request, res: Response) => {
 
     const filePath = path.join(UPLOAD_DIR, meta.filename);
     if (!fs.existsSync(filePath)) {
-        console.log(`[ERROR] メタデータには存在するが、実ファイルが見つかりません: ${filePath}`);
         return res.status(404).json({ error: 'ファイル本体が見つかりません。' });
     }
 
@@ -191,5 +169,5 @@ app.get('/api/download/:id', (req: Request, res: Response) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`検証用サーバー起動: http://localhost:${PORT}`);
+    console.log(`サーバー起動: http://localhost:${PORT}`);
 });
