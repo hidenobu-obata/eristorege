@@ -30,15 +30,16 @@ if (!fs.existsSync(UPLOAD_DIR)) {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
-// メタデータの読み込み
+// メタデータの安全な読み込み
 function loadMetadata(): Record<string, FileMeta> {
     try {
         if (fs.existsSync(METADATA_FILE)) {
             const data = fs.readFileSync(METADATA_FILE, 'utf-8');
             return data ? JSON.parse(data) : {};
         } else {
-            fs.writeFileSync(METADATA_FILE, JSON.stringify({}, null, 2));
-            return {};
+            const initialData = {};
+            fs.writeFileSync(METADATA_FILE, JSON.stringify(initialData, null, 2));
+            return initialData;
         }
     } catch (err) {
         console.error('メタデータの読み込みエラー:', err);
@@ -46,37 +47,46 @@ function loadMetadata(): Record<string, FileMeta> {
     }
 }
 
-// メタデータの保存
+// メタデータの安全な保存
 function saveMetadata(data: Record<string, FileMeta>) {
-    fs.writeFileSync(METADATA_FILE, JSON.stringify(data, null, 2));
+    try {
+        fs.writeFileSync(METADATA_FILE, JSON.stringify(data, null, 2));
+    } catch (err) {
+        console.error('メタデータの保存エラー:', err);
+    }
 }
 
-// 期限切れファイルの自動クリーンアップ（念のため異常に短い期限のものは強制的に7日に直す補正も追加）
+// 期限切れファイルの自動クリーンアップ（安全なバックグラウンド処理）
 function cleanupExpiredFiles() {
-    const metadata = loadMetadata();
-    const now = Date.now();
-    let updated = false;
+    try {
+        const metadata = loadMetadata();
+        const now = Date.now();
+        let updated = false;
 
-    for (const id in metadata) {
-        // もし登録されている期限が異常に短い（例：1時間以内など、過去のバグの残骸）場合、強制的に現在から7日後に延長する救済措置
-        const remainingTime = metadata[id].expiresAt - now;
-        if (remainingTime > 0 && remainingTime < 60 * 60 * 1000) {
-            metadata[id].expiresAt = now + EXPIRY_TIME_MS;
-            updated = true;
-            console.log(`[FIX] ファイル ${id} の期限が短すぎたため、7日後に再設定しました。`);
-        }
-
-        if (metadata[id].expiresAt < now) {
-            const filePath = path.join(UPLOAD_DIR, metadata[id].filename);
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
+        for (const id in metadata) {
+            // 万が一、短すぎる期限のデータがあれば7日後に直す
+            const remainingTime = metadata[id].expiresAt - now;
+            if (remainingTime > 0 && remainingTime < 60 * 60 * 1000) {
+                metadata[id].expiresAt = now + EXPIRY_TIME_MS;
+                updated = true;
             }
-            delete metadata[id];
-            updated = true;
+
+            if (metadata[id].expiresAt < now) {
+                const filePath = path.join(UPLOAD_DIR, metadata[id].filename);
+                if (fs.existsSync(filePath)) {
+                    try {
+                        fs.unlinkSync(filePath);
+                    } catch (e) {}
+                }
+                delete metadata[id];
+                updated = true;
+            }
         }
-    }
-    if (updated) {
-        saveMetadata(metadata);
+        if (updated) {
+            saveMetadata(metadata);
+        }
+    } catch (err) {
+        console.error('クリーンアップエラー:', err);
     }
 }
 
@@ -94,8 +104,6 @@ app.get('/dl/:id', (req: Request, res: Response) => {
 
 // ファイルアップロード処理
 app.post('/api/upload', (req: Request, res: Response) => {
-    cleanupExpiredFiles();
-
     const originalName = req.headers['x-file-name'] ? decodeURIComponent(req.headers['x-file-name'] as string) : 'file.zip';
     const password = req.headers['x-file-password'] as string | undefined;
 
@@ -117,7 +125,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
             sizeExceeded = true;
             writeStream.destroy();
             if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
+                try { fs.unlinkSync(filePath); } catch (e) {}
             }
             if (!res.headersSent) {
                 res.status(400).json({ error: '３０0M以上のファイルは扱えませんとエラーが表示されます。' });
@@ -131,7 +139,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
         if (sizeExceeded) return;
 
         const metadata = loadMetadata();
-        // 確実に現在時刻 ＋ 7日後を計算
+        // 確実に今から7日後（604,800,000ミリ秒）に設定
         const expiresAt = Date.now() + EXPIRY_TIME_MS; 
 
         metadata[fileId] = {
@@ -144,7 +152,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
         };
 
         saveMetadata(metadata);
-        console.log(`[UPLOAD] ファイル保存完了: ID=${fileId}, 有効期限=${new Date(expiresAt).toLocaleString()}`);
+        console.log(`[UPLOAD] 成功: ID=${fileId}, 期限=${new Date(expiresAt).toLocaleString()}`);
 
         res.json({
             success: true,
@@ -161,7 +169,6 @@ app.post('/api/upload', (req: Request, res: Response) => {
 
 // ファイル情報・パスワード確認用API
 app.post('/api/check/:id', (req: Request, res: Response) => {
-    cleanupExpiredFiles();
     const id = String(req.params.id);
     const { password } = req.body;
     const metadata = loadMetadata();
@@ -169,6 +176,11 @@ app.post('/api/check/:id', (req: Request, res: Response) => {
     const meta = metadata[id];
     if (!meta) {
         return res.status(404).json({ error: 'ファイルが見つからないか、期限切れです。' });
+    }
+
+    // 念のため期限切れチェック
+    if (meta.expiresAt < Date.now()) {
+        return res.status(404).json({ error: 'ファイルは期限切れです。' });
     }
 
     if (meta.password && meta.password !== password) {
@@ -180,8 +192,6 @@ app.post('/api/check/:id', (req: Request, res: Response) => {
 
 // ダウンロード処理
 app.get('/api/download/:id', (req: Request, res: Response) => {
-    cleanupExpiredFiles();
-
     if (currentDownloads >= MAX_CONCURRENT_DOWNLOADS) {
         return res.status(503).json({ error: '少し経ってから再アクセスください。' });
     }
@@ -195,16 +205,19 @@ app.get('/api/download/:id', (req: Request, res: Response) => {
         return res.status(404).json({ error: 'ファイルが存在しないか、期限切れです。' });
     }
 
+    // 念のため期限切れチェック
+    if (meta.expiresAt < Date.now()) {
+        return res.status(404).json({ error: 'ファイルは期限切れです。' });
+    }
+
     if (meta.password && meta.password !== password) {
         return res.status(401).json({ error: 'パスワード認証が必要です。' });
     }
 
     const filePath = path.join(UPLOAD_DIR, meta.filename);
-    console.log(`[DEBUG] 探しているファイルパス: ${filePath}`);
-    console.log(`[DEBUG] ファイル存在確認: ${fs.existsSync(filePath)}`);
 
     if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: `ファイル本体が見つかりません (${filePath})` });
+        return res.status(404).json({ error: `ファイル本体が見つかりません` });
     }
 
     currentDownloads++;
