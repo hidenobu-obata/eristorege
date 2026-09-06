@@ -10,7 +10,8 @@ const METADATA_FILE = process.env.NODE_ENV === 'production' ? path.join('/data',
 
 // 定数設定
 const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
-const EXPIRY_DAYS = 7;
+// 期限を確実に「7日」に設定 (7日 = 7 * 24 * 60 * 60 * 1000 ミリ秒)
+const EXPIRY_TIME_MS = 7 * 24 * 60 * 60 * 1000; 
 const MAX_CONCURRENT_DOWNLOADS = 100;
 
 let currentDownloads = 0;
@@ -36,7 +37,6 @@ function loadMetadata(): Record<string, FileMeta> {
             const data = fs.readFileSync(METADATA_FILE, 'utf-8');
             return data ? JSON.parse(data) : {};
         } else {
-            // ファイルがなければ空のJSONファイルを作成しておく
             fs.writeFileSync(METADATA_FILE, JSON.stringify({}, null, 2));
             return {};
         }
@@ -91,12 +91,11 @@ app.post('/api/upload', (req: Request, res: Response) => {
     const originalName = req.headers['x-file-name'] ? decodeURIComponent(req.headers['x-file-name'] as string) : 'file.zip';
     const password = req.headers['x-file-password'] as string | undefined;
 
-    // 拡張子チェック (ZIP方式限定)
     if (!originalName.toLowerCase().endsWith('.zip')) {
         return res.status(400).json({ error: 'ZIPファイルでないファイルはZIPファイルおいてください' });
     }
 
-    const fileId = uuidv4().substring(0, 8); // 短縮アドレス用ID
+    const fileId = uuidv4().substring(0, 8);
     const savedFilename = `${fileId}_${Date.now()}.zip`;
     const filePath = path.join(UPLOAD_DIR, savedFilename);
 
@@ -113,7 +112,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
                 fs.unlinkSync(filePath);
             }
             if (!res.headersSent) {
-                res.status(400).json({ error: '３００M以上のファイルは扱えませんとエラーが表示されます。' });
+                res.status(400).json({ error: '３０0M以上のファイルは扱えませんとエラーが表示されます。' });
             }
         }
     });
@@ -124,7 +123,8 @@ app.post('/api/upload', (req: Request, res: Response) => {
         if (sizeExceeded) return;
 
         const metadata = loadMetadata();
-        const expiresAt = Date.now() + EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+        // ★ ここでしっかりと7日後（7 * 24 * 60 * 60 * 1000）に設定しています
+        const expiresAt = Date.now() + EXPIRY_TIME_MS; 
 
         metadata[fileId] = {
             id: fileId,
@@ -153,7 +153,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
 // ファイル情報・パスワード確認用API
 app.post('/api/check/:id', (req: Request, res: Response) => {
     cleanupExpiredFiles();
-    const id = String(req.params.id); // 明示的にstringに変換
+    const id = String(req.params.id);
     const { password } = req.body;
     const metadata = loadMetadata();
 
@@ -169,7 +169,7 @@ app.post('/api/check/:id', (req: Request, res: Response) => {
     res.json({ success: true, originalName: meta.originalName, size: meta.size });
 });
 
-// ダウンロード処理（同時アクセス制限100人対応）
+// ダウンロード処理
 app.get('/api/download/:id', (req: Request, res: Response) => {
     cleanupExpiredFiles();
 
@@ -177,7 +177,7 @@ app.get('/api/download/:id', (req: Request, res: Response) => {
         return res.status(503).json({ error: '少し経ってから再アクセスください。' });
     }
 
-    const id = String(req.params.id); // 明示的にstringに変換
+    const id = String(req.params.id);
     const password = req.query.pwd as string | undefined;
     const metadata = loadMetadata();
     const meta = metadata[id];
