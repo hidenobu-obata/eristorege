@@ -176,6 +176,7 @@ app.get('/api/download/:id', (req: Request, res: Response) => {
     res.download(filePath, meta.originalName);
 });
 
-app.listen(PORT, () => {
-    console.log(`サーバー起動: http://localhost:${PORT}`);
+// 外部からのプロキシ接続を受け付けるよう '0.0.0.0' を指定
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`サーバー起動: http://0.0.0.0:${PORT}`);
 });
