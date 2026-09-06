@@ -31,14 +31,19 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 
 // メタデータの読み込み
 function loadMetadata(): Record<string, FileMeta> {
-    if (fs.existsSync(METADATA_FILE)) {
-        try {
-            return JSON.parse(fs.readFileSync(METADATA_FILE, 'utf-8'));
-        } catch {
+    try {
+        if (fs.existsSync(METADATA_FILE)) {
+            const data = fs.readFileSync(METADATA_FILE, 'utf-8');
+            return data ? JSON.parse(data) : {};
+        } else {
+            // ファイルがなければ空のJSONファイルを作成しておく
+            fs.writeFileSync(METADATA_FILE, JSON.stringify({}, null, 2));
             return {};
         }
+    } catch (err) {
+        console.error('メタデータの読み込みエラー:', err);
+        return {};
     }
-    return {};
 }
 
 // メタデータの保存
@@ -187,12 +192,10 @@ app.get('/api/download/:id', (req: Request, res: Response) => {
 
     const filePath = path.join(UPLOAD_DIR, meta.filename);
     console.log(`[DEBUG] 探しているファイルパス: ${filePath}`);
-    console.log(`[DEBUG] UPLOAD_DIR の値: ${UPLOAD_DIR}`);
     console.log(`[DEBUG] ファイル存在確認: ${fs.existsSync(filePath)}`);
 
     if (!fs.existsSync(filePath)) {
         return res.status(404).json({ error: `ファイル本体が見つかりません (${filePath})` });
-    
     }
 
     currentDownloads++;
