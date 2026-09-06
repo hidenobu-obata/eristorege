@@ -10,8 +10,8 @@ const METADATA_FILE = process.env.NODE_ENV === 'production' ? path.join('/data',
 
 // 定数設定
 const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
-// 期限を確実に「7日」に設定 (7日 = 7 * 24 * 60 * 60 * 1000 ミリ秒)
-const EXPIRY_TIME_MS = 7 * 24 * 60 * 60 * 1000; 
+// 完全に7日間に固定 (7日 × 24時間 × 60分 × 60秒 × 1000ミリ秒 = 604,800,000ミリ秒)
+const EXPIRY_TIME_MS = 604800000; 
 const MAX_CONCURRENT_DOWNLOADS = 100;
 
 let currentDownloads = 0;
@@ -123,7 +123,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
         if (sizeExceeded) return;
 
         const metadata = loadMetadata();
-        // ★ ここでしっかりと7日後（7 * 24 * 60 * 60 * 1000）に設定しています
+        // 確実に今から7日後（604,800,000ミリ秒後）に設定
         const expiresAt = Date.now() + EXPIRY_TIME_MS; 
 
         metadata[fileId] = {
