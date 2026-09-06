@@ -10,8 +10,8 @@ const METADATA_FILE = process.env.NODE_ENV === 'production' ? path.join('/data',
 
 // 定数設定
 const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
-// 完全に7日間に固定 (7日 × 24時間 × 60分 × 60秒 × 1000ミリ秒 = 604,800,000ミリ秒)
-const EXPIRY_TIME_MS = 604800000; 
+// 7日間（604,800,000ミリ秒）
+const EXPIRY_TIME_MS = 7 * 24 * 60 * 60 * 1000; 
 const MAX_CONCURRENT_DOWNLOADS = 100;
 
 let currentDownloads = 0;
@@ -51,13 +51,21 @@ function saveMetadata(data: Record<string, FileMeta>) {
     fs.writeFileSync(METADATA_FILE, JSON.stringify(data, null, 2));
 }
 
-// 期限切れファイルの自動クリーンアップ
+// 期限切れファイルの自動クリーンアップ（念のため異常に短い期限のものは強制的に7日に直す補正も追加）
 function cleanupExpiredFiles() {
     const metadata = loadMetadata();
     const now = Date.now();
     let updated = false;
 
     for (const id in metadata) {
+        // もし登録されている期限が異常に短い（例：1時間以内など、過去のバグの残骸）場合、強制的に現在から7日後に延長する救済措置
+        const remainingTime = metadata[id].expiresAt - now;
+        if (remainingTime > 0 && remainingTime < 60 * 60 * 1000) {
+            metadata[id].expiresAt = now + EXPIRY_TIME_MS;
+            updated = true;
+            console.log(`[FIX] ファイル ${id} の期限が短すぎたため、7日後に再設定しました。`);
+        }
+
         if (metadata[id].expiresAt < now) {
             const filePath = path.join(UPLOAD_DIR, metadata[id].filename);
             if (fs.existsSync(filePath)) {
@@ -123,7 +131,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
         if (sizeExceeded) return;
 
         const metadata = loadMetadata();
-        // 確実に今から7日後（604,800,000ミリ秒後）に設定
+        // 確実に現在時刻 ＋ 7日後を計算
         const expiresAt = Date.now() + EXPIRY_TIME_MS; 
 
         metadata[fileId] = {
@@ -136,6 +144,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
         };
 
         saveMetadata(metadata);
+        console.log(`[UPLOAD] ファイル保存完了: ID=${fileId}, 有効期限=${new Date(expiresAt).toLocaleString()}`);
 
         res.json({
             success: true,
