@@ -10,7 +10,8 @@ const isFlyEnv = fs.existsSync('/data') || process.env.NODE_ENV === 'production'
 const UPLOAD_DIR = isFlyEnv ? '/data/uploads' : path.join(__dirname, 'uploads');
 const METADATA_FILE = isFlyEnv ? path.join('/data', 'metadata.json') : path.join(__dirname, 'metadata.json');
 
-const MAX_FILE_SIZE = 300 * 1024 * 1024; 
+// 授業用：最大ファイルサイズを 10MB に設定
+const MAX_FILE_SIZE = 10 * 1024 * 1024; 
 const EXPIRY_TIME_MS = 7 * 24 * 60 * 60 * 1000; // 7日
 
 interface FileMeta {
@@ -32,25 +33,30 @@ try {
     console.error('UPLOAD_DIR作成失敗:', e);
 }
 
-// 【インメモリキャッシュ】起動時に一度だけ確実にメモリにロードする
-let cachedMetadata: Record<string, FileMeta> = {};
-
-try {
-    if (fs.existsSync(METADATA_FILE)) {
-        const data = fs.readFileSync(METADATA_FILE, 'utf-8');
-        cachedMetadata = data ? JSON.parse(data) : {};
-        console.log(`[INIT] メタデータをメモリにロードしました。件数: ${Object.keys(cachedMetadata).length}`);
-    } else {
+if (!fs.existsSync(METADATA_FILE)) {
+    try {
         fs.writeFileSync(METADATA_FILE, JSON.stringify({}, null, 2));
-    }
-} catch (e) {
-    console.error('メタデータ初期化エラー:', e);
+    } catch (e) {}
 }
 
-// メタデータの保存（メモリ更新 ＋ ディスク即時保存）
-function saveMetadata() {
+// 常にディスクから最新のメタデータを確実に読み込む
+function loadMetadata(): Record<string, FileMeta> {
     try {
-        fs.writeFileSync(METADATA_FILE, JSON.stringify(cachedMetadata, null, 2));
+        if (fs.existsSync(METADATA_FILE)) {
+            const data = fs.readFileSync(METADATA_FILE, 'utf-8');
+            return data ? JSON.parse(data) : {};
+        }
+        return {};
+    } catch (err) {
+        console.error('メタデータ読み込みエラー:', err);
+        return {};
+    }
+}
+
+// メタデータの保存
+function saveMetadata(data: Record<string, FileMeta>) {
+    try {
+        fs.writeFileSync(METADATA_FILE, JSON.stringify(data, null, 2));
     } catch (err) {
         console.error('メタデータ保存エラー:', err);
     }
@@ -64,10 +70,14 @@ app.get('/dl/:id', (req: Request, res: Response) => {
     res.sendFile(path.join(__dirname, 'public', 'dl.html'));
 });
 
-// アップロード
+// アップロード処理（10MB制限）
 app.post('/api/upload', (req: Request, res: Response) => {
     const originalName = req.headers['x-file-name'] ? decodeURIComponent(req.headers['x-file-name'] as string) : 'file.zip';
     const password = req.headers['x-file-password'] as string | undefined;
+
+    if (!originalName.toLowerCase().endsWith('.zip')) {
+        return res.status(400).json({ error: 'ZIPファイルのみアップロード可能です。' });
+    }
 
     const fileId = uuidv4().substring(0, 8);
     const savedFilename = `${fileId}_${Date.now()}.zip`;
@@ -84,7 +94,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
             writeStream.destroy();
             if (fs.existsSync(filePath)) { try { fs.unlinkSync(filePath); } catch(e){} }
             if (!res.headersSent) {
-                res.status(400).json({ error: '300MB超えてます' });
+                res.status(400).json({ error: '10MBを超えるファイルはアップロードできません。' });
             }
         }
     });
@@ -94,10 +104,11 @@ app.post('/api/upload', (req: Request, res: Response) => {
     writeStream.on('finish', () => {
         if (sizeExceeded) return;
 
+        const metadata = loadMetadata();
         const now = Date.now();
         const expiresAt = now + EXPIRY_TIME_MS;
 
-        cachedMetadata[fileId] = {
+        metadata[fileId] = {
             id: fileId,
             originalName,
             filename: savedFilename,
@@ -107,8 +118,8 @@ app.post('/api/upload', (req: Request, res: Response) => {
             expiresAt
         };
 
-        saveMetadata();
-        console.log(`[UPLOAD] キャッシュ＆永続化成功: ID=${fileId}`);
+        saveMetadata(metadata);
+        console.log(`[UPLOAD] 成功: ID=${fileId}, サイズ=${Math.round(fileSize / 1024)}KB`);
 
         res.json({ success: true, downloadUrl: `/dl/${fileId}` });
     });
@@ -120,12 +131,13 @@ app.post('/api/upload', (req: Request, res: Response) => {
     });
 });
 
-// チェック（メモリ上のキャッシュを参照するため、起動直後でも一瞬で確実に判定可能）
+// ファイル確認用API
 app.post('/api/check/:id', (req: Request, res: Response) => {
     const id = String(req.params.id);
     const { password } = req.body;
+    const metadata = loadMetadata();
 
-    const meta = cachedMetadata[id];
+    const meta = metadata[id];
     if (!meta) {
         return res.status(404).json({ error: 'ファイルが見つからないか、期限切れです。' });
     }
@@ -141,14 +153,19 @@ app.post('/api/check/:id', (req: Request, res: Response) => {
     res.json({ success: true, originalName: meta.originalName, size: meta.size });
 });
 
-// ダウンロード
+// ダウンロード処理
 app.get('/api/download/:id', (req: Request, res: Response) => {
     const id = String(req.params.id);
     const password = req.query.pwd as string | undefined;
-    const meta = cachedMetadata[id];
+    const metadata = loadMetadata();
+    const meta = metadata[id];
 
     if (!meta || meta.expiresAt < Date.now()) {
         return res.status(404).json({ error: 'ファイルが存在しないか、期限切れです。' });
+    }
+
+    if (meta.password && meta.password !== password) {
+        return res.status(401).json({ error: 'パスワード認証が必要です。' });
     }
 
     const filePath = path.join(UPLOAD_DIR, meta.filename);
