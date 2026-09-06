@@ -6,7 +6,6 @@ import * as path from 'path';
 const app = express();
 const PORT = 3000;
 
-// 【超重要】Fly.ioのボリューム（/data）が存在するか、または production の場合に /data を強制使用
 const isFlyEnv = fs.existsSync('/data') || process.env.NODE_ENV === 'production';
 const UPLOAD_DIR = isFlyEnv ? '/data/uploads' : path.join(__dirname, 'uploads');
 const METADATA_FILE = isFlyEnv ? path.join('/data', 'metadata.json') : path.join(__dirname, 'metadata.json');
@@ -24,10 +23,7 @@ interface FileMeta {
     expiresAt: number;
 }
 
-console.log(`[FIXED] 判定環境: ${isFlyEnv ? 'Fly.io 永続ボリューム (/data)' : 'ローカル環境'}`);
-console.log(`[FIXED] UPLOAD_DIR: ${UPLOAD_DIR}`);
-console.log(`[FIXED] METADATA_FILE: ${METADATA_FILE}`);
-
+// ディレクトリ作成
 try {
     if (!fs.existsSync(UPLOAD_DIR)) {
         fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -36,30 +32,28 @@ try {
     console.error('UPLOAD_DIR作成失敗:', e);
 }
 
+// 【インメモリキャッシュ】起動時に一度だけ確実にメモリにロードする
+let cachedMetadata: Record<string, FileMeta> = {};
+
 try {
-    if (!fs.existsSync(METADATA_FILE)) {
+    if (fs.existsSync(METADATA_FILE)) {
+        const data = fs.readFileSync(METADATA_FILE, 'utf-8');
+        cachedMetadata = data ? JSON.parse(data) : {};
+        console.log(`[INIT] メタデータをメモリにロードしました。件数: ${Object.keys(cachedMetadata).length}`);
+    } else {
         fs.writeFileSync(METADATA_FILE, JSON.stringify({}, null, 2));
     }
 } catch (e) {
-    console.error('METADATA_FILE作成失敗:', e);
+    console.error('メタデータ初期化エラー:', e);
 }
 
-function loadMetadata(): Record<string, FileMeta> {
+// メタデータの保存（メモリ更新 ＋ ディスク即時保存）
+function saveMetadata() {
     try {
-        if (fs.existsSync(METADATA_FILE)) {
-            const data = fs.readFileSync(METADATA_FILE, 'utf-8');
-            return data ? JSON.parse(data) : {};
-        }
-        return {};
+        fs.writeFileSync(METADATA_FILE, JSON.stringify(cachedMetadata, null, 2));
     } catch (err) {
-        return {};
+        console.error('メタデータ保存エラー:', err);
     }
-}
-
-function saveMetadata(data: Record<string, FileMeta>) {
-    try {
-        fs.writeFileSync(METADATA_FILE, JSON.stringify(data, null, 2));
-    } catch (err) {}
 }
 
 app.use(express.json());
@@ -100,11 +94,10 @@ app.post('/api/upload', (req: Request, res: Response) => {
     writeStream.on('finish', () => {
         if (sizeExceeded) return;
 
-        const metadata = loadMetadata();
         const now = Date.now();
         const expiresAt = now + EXPIRY_TIME_MS;
 
-        metadata[fileId] = {
+        cachedMetadata[fileId] = {
             id: fileId,
             originalName,
             filename: savedFilename,
@@ -114,8 +107,8 @@ app.post('/api/upload', (req: Request, res: Response) => {
             expiresAt
         };
 
-        saveMetadata(metadata);
-        console.log(`[UPLOAD] 永続化成功: ID=${fileId}, パス=${filePath}`);
+        saveMetadata();
+        console.log(`[UPLOAD] キャッシュ＆永続化成功: ID=${fileId}`);
 
         res.json({ success: true, downloadUrl: `/dl/${fileId}` });
     });
@@ -127,13 +120,12 @@ app.post('/api/upload', (req: Request, res: Response) => {
     });
 });
 
-// チェック
+// チェック（メモリ上のキャッシュを参照するため、起動直後でも一瞬で確実に判定可能）
 app.post('/api/check/:id', (req: Request, res: Response) => {
     const id = String(req.params.id);
     const { password } = req.body;
-    const metadata = loadMetadata();
 
-    const meta = metadata[id];
+    const meta = cachedMetadata[id];
     if (!meta) {
         return res.status(404).json({ error: 'ファイルが見つからないか、期限切れです。' });
     }
@@ -153,8 +145,7 @@ app.post('/api/check/:id', (req: Request, res: Response) => {
 app.get('/api/download/:id', (req: Request, res: Response) => {
     const id = String(req.params.id);
     const password = req.query.pwd as string | undefined;
-    const metadata = loadMetadata();
-    const meta = metadata[id];
+    const meta = cachedMetadata[id];
 
     if (!meta || meta.expiresAt < Date.now()) {
         return res.status(404).json({ error: 'ファイルが存在しないか、期限切れです。' });
