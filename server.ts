@@ -186,8 +186,13 @@ app.get('/api/download/:id', (req: Request, res: Response) => {
     }
 
     const filePath = path.join(UPLOAD_DIR, meta.filename);
+    console.log(`[DEBUG] 探しているファイルパス: ${filePath}`);
+    console.log(`[DEBUG] UPLOAD_DIR の値: ${UPLOAD_DIR}`);
+    console.log(`[DEBUG] ファイル存在確認: ${fs.existsSync(filePath)}`);
+
     if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: 'ファイル本体が見つかりません。' });
+        return res.status(404).json({ error: `ファイル本体が見つかりません (${filePath})` });
+    
     }
 
     currentDownloads++;
