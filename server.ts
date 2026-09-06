@@ -5,12 +5,14 @@ import * as path from 'path';
 
 const app = express();
 const PORT = 3000;
-const UPLOAD_DIR = process.env.NODE_ENV === 'production' ? '/data' : path.join(__dirname, 'uploads');
-const METADATA_FILE = process.env.NODE_ENV === 'production' ? path.join('/data', 'metadata.json') : path.join(__dirname, 'metadata.json');
 
-// 定数設定
-const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300MB
-// 7日間（604,800,000ミリ秒）
+// Fly.ioの本番環境では必ず /data ボリュームを使用する
+const isProduction = process.env.NODE_ENV === 'production';
+const UPLOAD_DIR = isProduction ? '/data/uploads' : path.join(__dirname, 'uploads');
+const METADATA_FILE = isProduction ? '/data/metadata.json' : path.join(__dirname, 'metadata.json');
+
+// 定数設定 (MAX 300MB, 7日 = 604,800,000ミリ秒)
+const MAX_FILE_SIZE = 300 * 1024 * 1024; 
 const EXPIRY_TIME_MS = 7 * 24 * 60 * 60 * 1000; 
 const MAX_CONCURRENT_DOWNLOADS = 100;
 
@@ -25,9 +27,23 @@ interface FileMeta {
     expiresAt: number;
 }
 
-// アップロードディレクトリの作成
-if (!fs.existsSync(UPLOAD_DIR)) {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+// 起動時にディレクトリとメタデータファイルを確実に初期化
+try {
+    if (!fs.existsSync(UPLOAD_DIR)) {
+        fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+        console.log(`[INIT] アップロードディレクトリを作成しました: ${UPLOAD_DIR}`);
+    }
+} catch (e) {
+    console.error('UPLOAD_DIR作成エラー:', e);
+}
+
+try {
+    if (!fs.existsSync(METADATA_FILE)) {
+        fs.writeFileSync(METADATA_FILE, JSON.stringify({}, null, 2));
+        console.log(`[INIT] メタデータファイルを作成しました: ${METADATA_FILE}`);
+    }
+} catch (e) {
+    console.error('METADATA_FILE作成エラー:', e);
 }
 
 // メタデータの安全な読み込み
@@ -36,11 +52,8 @@ function loadMetadata(): Record<string, FileMeta> {
         if (fs.existsSync(METADATA_FILE)) {
             const data = fs.readFileSync(METADATA_FILE, 'utf-8');
             return data ? JSON.parse(data) : {};
-        } else {
-            const initialData = {};
-            fs.writeFileSync(METADATA_FILE, JSON.stringify(initialData, null, 2));
-            return initialData;
         }
+        return {};
     } catch (err) {
         console.error('メタデータの読み込みエラー:', err);
         return {};
@@ -55,43 +68,6 @@ function saveMetadata(data: Record<string, FileMeta>) {
         console.error('メタデータの保存エラー:', err);
     }
 }
-
-// 期限切れファイルの自動クリーンアップ（安全なバックグラウンド処理）
-function cleanupExpiredFiles() {
-    try {
-        const metadata = loadMetadata();
-        const now = Date.now();
-        let updated = false;
-
-        for (const id in metadata) {
-            // 万が一、短すぎる期限のデータがあれば7日後に直す
-            const remainingTime = metadata[id].expiresAt - now;
-            if (remainingTime > 0 && remainingTime < 60 * 60 * 1000) {
-                metadata[id].expiresAt = now + EXPIRY_TIME_MS;
-                updated = true;
-            }
-
-            if (metadata[id].expiresAt < now) {
-                const filePath = path.join(UPLOAD_DIR, metadata[id].filename);
-                if (fs.existsSync(filePath)) {
-                    try {
-                        fs.unlinkSync(filePath);
-                    } catch (e) {}
-                }
-                delete metadata[id];
-                updated = true;
-            }
-        }
-        if (updated) {
-            saveMetadata(metadata);
-        }
-    } catch (err) {
-        console.error('クリーンアップエラー:', err);
-    }
-}
-
-// 定期的にクリーンアップを実行 (1時間ごと)
-setInterval(cleanupExpiredFiles, 60 * 60 * 1000);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -108,7 +84,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
     const password = req.headers['x-file-password'] as string | undefined;
 
     if (!originalName.toLowerCase().endsWith('.zip')) {
-        return res.status(400).json({ error: 'ZIPファイルでないファイルはZIPファイルおいてください' });
+        return res.status(400).json({ error: 'ZIPファイルのみアップロード可能です。' });
     }
 
     const fileId = uuidv4().substring(0, 8);
@@ -128,7 +104,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
                 try { fs.unlinkSync(filePath); } catch (e) {}
             }
             if (!res.headersSent) {
-                res.status(400).json({ error: '３０0M以上のファイルは扱えませんとエラーが表示されます。' });
+                res.status(400).json({ error: '300MBを超えるファイルはアップロードできません。' });
             }
         }
     });
@@ -139,7 +115,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
         if (sizeExceeded) return;
 
         const metadata = loadMetadata();
-        // 確実に今から7日後（604,800,000ミリ秒）に設定
+        // 確実に現在時刻から7日後（604,800,000ミリ秒後）に設定
         const expiresAt = Date.now() + EXPIRY_TIME_MS; 
 
         metadata[fileId] = {
@@ -152,7 +128,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
         };
 
         saveMetadata(metadata);
-        console.log(`[UPLOAD] 成功: ID=${fileId}, 期限=${new Date(expiresAt).toLocaleString()}`);
+        console.log(`[UPLOAD] 成功: ID=${fileId}, ファイル名=${originalName}, 期限=${new Date(expiresAt).toLocaleString()}`);
 
         res.json({
             success: true,
@@ -161,6 +137,7 @@ app.post('/api/upload', (req: Request, res: Response) => {
     });
 
     writeStream.on('error', (err) => {
+        console.error('アップロード書き込みエラー:', err);
         if (!res.headersSent) {
             res.status(500).json({ error: 'アップロードに失敗しました。' });
         }
@@ -178,11 +155,7 @@ app.post('/api/check/:id', (req: Request, res: Response) => {
         return res.status(404).json({ error: 'ファイルが見つからないか、期限切れです。' });
     }
 
-    // 念のため期限切れチェック
-    if (meta.expiresAt < Date.now()) {
-        return res.status(404).json({ error: 'ファイルは期限切れです。' });
-    }
-
+    // パスワード確認
     if (meta.password && meta.password !== password) {
         return res.status(401).json({ error: 'パスワードが違います。' });
     }
@@ -193,7 +166,7 @@ app.post('/api/check/:id', (req: Request, res: Response) => {
 // ダウンロード処理
 app.get('/api/download/:id', (req: Request, res: Response) => {
     if (currentDownloads >= MAX_CONCURRENT_DOWNLOADS) {
-        return res.status(503).json({ error: '少し経ってから再アクセスください。' });
+        return res.status(503).json({ error: 'アクセスが集中しています。少し経ってから再アクセスしてください。' });
     }
 
     const id = String(req.params.id);
@@ -205,11 +178,6 @@ app.get('/api/download/:id', (req: Request, res: Response) => {
         return res.status(404).json({ error: 'ファイルが存在しないか、期限切れです。' });
     }
 
-    // 念のため期限切れチェック
-    if (meta.expiresAt < Date.now()) {
-        return res.status(404).json({ error: 'ファイルは期限切れです。' });
-    }
-
     if (meta.password && meta.password !== password) {
         return res.status(401).json({ error: 'パスワード認証が必要です。' });
     }
@@ -217,12 +185,15 @@ app.get('/api/download/:id', (req: Request, res: Response) => {
     const filePath = path.join(UPLOAD_DIR, meta.filename);
 
     if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: `ファイル本体が見つかりません` });
+        return res.status(404).json({ error: `ファイル本体が見つかりません。` });
     }
 
     currentDownloads++;
     res.download(filePath, meta.originalName, (err) => {
         currentDownloads--;
+        if (err) {
+            console.error('ダウンロードエラー:', err);
+        }
     });
 });
 
